@@ -1,3 +1,5 @@
+import ItineraryForm from "./components/ItineraryForm";
+
 // app/page.tsx (Server Component)
 interface ApiResponse {
     status: string;
@@ -18,16 +20,18 @@ async function getMessage(): Promise<ApiResponse> {
 }
 
 export default async function HomePage() {
-    const data = await getMessage();
+    // const data = await getMessage();
 
     return (
         <main className="p-8">
-            <h1 className="text-2xl font-bold">Dashboard</h1>
-            <div className="mt-4 p-4 border rounded bg-gray-50">
-                <p className="text-sm text-gray-500">Status: {data.status}</p>
+            <div className="mt-4 p-4 border rounded">
+                {/* <p className="text-sm text-gray-500">Status: {data.status}</p>
                 <p className="text-lg font-medium text-green-600">
                     {data.message}
-                </p>
+                </p> */}
+                <div className="flex w-1/2 h-screen justify-center items-center">
+                    <ItineraryForm />
+                </div>
             </div>
         </main>
     );
