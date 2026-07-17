@@ -23,16 +23,8 @@ export default async function HomePage() {
     // const data = await getMessage();
 
     return (
-        <main className="p-8">
-            <div className="mt-4 p-4 border rounded">
-                {/* <p className="text-sm text-gray-500">Status: {data.status}</p>
-                <p className="text-lg font-medium text-green-600">
-                    {data.message}
-                </p> */}
-                <div className="flex w-1/2 h-screen justify-center items-center">
-                    <ItineraryForm />
-                </div>
-            </div>
+        <main className="flex mx-auto w-1/2 h-screen justify-center items-center">
+            <ItineraryForm />
         </main>
     );
 }
