@@ -6,7 +6,7 @@ export default function ItineraryForm() {
     const [budget, setBudget] = useState("");
     const [days, setDays] = useState("");
 
-    async function handleSubmit(e: React.FormEvent) {
+    async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
         e.preventDefault();
 
         const trip = {
