@@ -35,10 +35,6 @@ export default function ItineraryForm() {
                     <h1 className="text-3xl font-bold text-gray-900">
                         Plan Your Trip
                     </h1>
-                    <p className="mt-2 text-gray-500">
-                        Tell us about your travel plans and we'll generate a
-                        personalized itinerary.
-                    </p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-6">
