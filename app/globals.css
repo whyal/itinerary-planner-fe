@@ -1,1 +1,45 @@
 @import "tailwindcss";
+
+.ticket-stub {
+    position: relative;
+}
+
+.ticket-stub::before,
+.ticket-stub::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 20px;
+    height: 20px;
+    background: #101b2d; /* must match the page background behind the card */
+    border-radius: 9999px;
+    transform: translateY(-50%);
+    z-index: 10;
+}
+
+.ticket-stub::before {
+    left: -10px;
+}
+
+.ticket-stub::after {
+    right: -10px;
+}
+
+.route-line {
+    background-image: repeating-linear-gradient(
+        to bottom,
+        #6fa8dc 0,
+        #6fa8dc 6px,
+        transparent 6px,
+        transparent 14px
+    );
+    width: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
