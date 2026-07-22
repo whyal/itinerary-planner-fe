@@ -3,9 +3,8 @@ import { fraunces, inter, plexMono } from "./lib/Fonts";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Waypoint — Plan your next trip in minutes",
-  description:
-    "Smart, flexible travel itineraries with visual route mapping, real-time collaboration, and conflict-free scheduling.",
+  title: "Plan your next trip in minutes",
+  description: "Your Travel Itinerary Planner",
 };
 
 export default function RootLayout({
