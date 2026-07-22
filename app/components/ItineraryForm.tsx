@@ -52,7 +52,7 @@ Generate a ${formData.days}-day itinerary matching these constraints.`;
     };
     try {
       const response = await fetch(
-        "http://localhost:8080/api/v1/itinerary/generate",
+        "http://localhost:8080/api/itinerary/generate",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
