@@ -1,1 +1,24 @@
-Front-end for my AI trip planner assistant.
+#  AI Travel Itinerary Generator — Frontend Client
+
+The web interface for the AI Travel Itinerary Generator, built with **Next.js (App Router)**, **TypeScript**, and **Tailwind CSS**. 
+
+This client interfaces with a backend Spring AI service to provide a type-safe travel planning experience. It supports dynamic UUID session management and consumes Server-Sent Events (SSE) to render travel itineraries progressively as the AI generates them.
+
+---
+
+##  Key Features
+
+- **Progressive UI Rendering:** Consumes the backend's `text/event-stream` SSE endpoint (`/api/itinerary/stream`) to display itinerary days, activities, and dining options in real-time without waiting for full generation.
+- **Type-Safe State Management:** Matches TypeScript interfaces 1:1 with the backend's Java 25+ Records (`Itinerary`, `PromptRequest`) to prevent runtime schema mismatches.
+- **Dynamic Session Isolation:** Automatically generates and persists unique `conversationId` UUIDs per user session, ensuring multi-turn chat memory remains isolated when communicating with the backend's `MessageChatMemoryAdvisor`.
+- **Responsive & Accessible UI:** Styled with Tailwind CSS for clean, adaptable layouts across mobile, tablet, and desktop viewports.
+
+---
+
+##  Tech Stack
+
+- **Framework:** Next.js (App Router)
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS
+- **Networking:** Native Fetch API (supporting `application/json` and `text/event-stream`)
+- **State Management:** React Hooks (`useState`, `useEffect`, `useRef` for SSE stream reading)
