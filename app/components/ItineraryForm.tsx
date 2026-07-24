@@ -1,23 +1,39 @@
 "use client";
 
-import { useState, FormEvent, ChangeEvent } from "react";
+import { useState, useEffect, useRef, FormEvent, ChangeEvent } from "react";
+import {
+  Sparkles,
+  Loader2,
+  Square,
+  MapPin,
+  Clock,
+  Calendar,
+  RefreshCw,
+  Terminal,
+  FileText,
+  AlertCircle,
+  Trash2,
+} from "lucide-react";
 
 // Matches the Spring AI Java Record structure
+interface Activity {
+  time: string;
+  location: string;
+  description: string;
+}
+
+interface DayPlan {
+  dayNumber: number;
+  theme: string;
+  activities: Activity[];
+}
+
 interface ItineraryResponse {
   destination: string;
-  days: Array<{
-    dayNumber: number;
-    theme: string;
-    activities: Array<{
-      time: string;
-      location: string;
-      description: string;
-    }>;
-  }>;
+  days: DayPlan[];
 }
 
 export default function ItineraryForm() {
-  // Discrete state fields for clean user input
   const [formData, setFormData] = useState({
     destination: "Osaka",
     days: 3,
@@ -27,9 +43,88 @@ export default function ItineraryForm() {
   });
 
   const [loading, setLoading] = useState(false);
+  const [streamedText, setStreamedText] = useState("");
   const [itinerary, setItinerary] = useState<ItineraryResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"structured" | "raw">("structured");
 
-  // 1. Formats discrete inputs into the compact key-value prompt
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const streamEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Initialize session conversation ID & restore saved itinerary on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      let savedId = localStorage.getItem("itinerary_conversation_id");
+      if (!savedId) {
+        savedId = crypto.randomUUID();
+        localStorage.setItem("itinerary_conversation_id", savedId);
+      }
+      setConversationId(savedId);
+
+      // Restore previously generated itinerary for this session from localStorage
+      const cached = localStorage.getItem(`itinerary_saved_${savedId}`);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (parsed.itinerary) setItinerary(parsed.itinerary);
+          if (parsed.streamedText) setStreamedText(parsed.streamedText);
+          if (parsed.formData) setFormData(parsed.formData);
+        } catch (e) {
+          console.error("Failed to restore saved itinerary:", e);
+        }
+      }
+    }
+  }, []);
+
+  // Helper to persist current session output to localStorage
+  const saveSessionCache = (
+    newItinerary: ItineraryResponse | null,
+    newStreamedText: string,
+    currentFormData: typeof formData,
+    sessionUuid: string
+  ) => {
+    if (typeof window !== "undefined" && sessionUuid) {
+      localStorage.setItem(
+        `itinerary_saved_${sessionUuid}`,
+        JSON.stringify({
+          itinerary: newItinerary,
+          streamedText: newStreamedText,
+          formData: currentFormData,
+        })
+      );
+    }
+  };
+
+  // Auto-scroll streaming log container as new text streams in
+  useEffect(() => {
+    if (loading && streamEndRef.current) {
+      streamEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [streamedText, loading]);
+
+  const handleResetSession = () => {
+    if (typeof window !== "undefined" && conversationId) {
+      localStorage.removeItem(`itinerary_saved_${conversationId}`);
+    }
+    const newId = crypto.randomUUID();
+    if (typeof window !== "undefined") {
+      localStorage.setItem("itinerary_conversation_id", newId);
+    }
+    setConversationId(newId);
+    setItinerary(null);
+    setStreamedText("");
+    setError(null);
+  };
+
+  const handleClearSavedData = () => {
+    if (typeof window !== "undefined" && conversationId) {
+      localStorage.removeItem(`itinerary_saved_${conversationId}`);
+    }
+    setItinerary(null);
+    setStreamedText("");
+  };
+
   const formatToKeyValuePrompt = (): string => {
     return `Destination: ${formData.destination}
 Days: ${formData.days}
@@ -40,155 +135,441 @@ Budget: ${formData.budget}
 Generate a ${formData.days}-day itinerary matching these constraints.`;
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setItinerary(null);
-
-    // 2. Wrap the formatted string into a lightweight payload
-    const payload = {
-      prompt: formatToKeyValuePrompt(),
-      conversationId: "session-uuid-here", // Match exact Java record field names
-    };
-    try {
-      const response = await fetch(
-        "http://localhost:8080/api/itinerary/generate",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-      );
-
-      if (!response.ok) throw new Error("Network response was not ok");
-
-      const data: ItineraryResponse = await response.json();
-      setItinerary(data);
-    } catch (error) {
-      console.error("Failed to generate itinerary:", error);
-    } finally {
+  const stopStream = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
       setLoading(false);
     }
   };
 
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setStreamedText("");
+    setItinerary(null);
+    setError(null);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const currentSessionId = conversationId || crypto.randomUUID();
+    const payload = {
+      prompt: formatToKeyValuePrompt(),
+      conversationId: currentSessionId,
+    };
+
+    let accumulatedText = "";
+    let finalParsedItinerary: ItineraryResponse | null = null;
+
+    try {
+      const response = await fetch(
+        "http://localhost:8080/api/itinerary/stream",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream, application/json, text/plain",
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Server returned HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Response body is not a readable stream.");
+      }
+
+      const decoder = new TextDecoder("utf-8");
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const rawChunk = decoder.decode(value, { stream: true });
+
+        // Process SSE payload format if formatted with "data: ..." lines
+        let textChunk = "";
+        if (rawChunk.includes("data:")) {
+          const lines = rawChunk.split("\n");
+          for (const line of lines) {
+            if (line.startsWith("data:")) {
+              const content = line.slice(5).trimStart();
+              if (content !== "[DONE]") {
+                textChunk += content + "\n";
+              }
+            } else if (
+              line.trim() &&
+              !line.startsWith("event:") &&
+              !line.startsWith("id:") &&
+              !line.startsWith("retry:")
+            ) {
+              textChunk += line + "\n";
+            }
+          }
+        } else {
+          textChunk = rawChunk;
+        }
+
+        accumulatedText += textChunk;
+        setStreamedText(accumulatedText);
+
+        // Attempt soft JSON parse while streaming
+        try {
+          const trimmed = accumulatedText.trim();
+          if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.destination && Array.isArray(parsed.days)) {
+              setItinerary(parsed);
+              finalParsedItinerary = parsed;
+            }
+          }
+        } catch {
+          // Streaming text incomplete or markdown - expected during stream
+        }
+      }
+
+      // Flush decoder buffer
+      const finalChunk = decoder.decode();
+      if (finalChunk) {
+        accumulatedText += finalChunk;
+        setStreamedText(accumulatedText);
+      }
+
+      // Final attempt to parse complete JSON object
+      try {
+        const trimmed = accumulatedText.trim();
+        if (trimmed.startsWith("{")) {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.destination && Array.isArray(parsed.days)) {
+            setItinerary(parsed);
+            finalParsedItinerary = parsed;
+          }
+        }
+      } catch {
+        // Formatted plain markdown/text response
+      }
+
+      // Persist results in localStorage
+      saveSessionCache(finalParsedItinerary, accumulatedText, formData, currentSessionId);
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        console.log("Stream generation stopped by user.");
+      } else {
+        const errorMessage =
+          err instanceof Error ? err.message : "An unexpected error occurred while streaming.";
+        console.error("Streaming error:", err);
+        setError(errorMessage);
+      }
+    } finally {
+      setLoading(false);
+      abortControllerRef.current = null;
+    }
+  };
+
   const handleChange = (
-    e: ChangeEvent<HTMLInputElement | HTMLSelectElement>,
+    e: ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
   return (
-    <div className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md">
-      <h2 className="text-xl font-bold mb-4">Plan Your Trip</h2>
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium">Destination</label>
-          <input
-            type="text"
-            name="destination"
-            value={formData.destination}
-            onChange={handleChange}
-            className="w-full mt-1 p-2 border rounded"
-            required
-          />
+    <div className="max-w-3xl mx-auto space-y-8">
+      {/* Form Card */}
+      <div className="p-6 sm:p-8 bg-white rounded-2xl shadow-xl border border-slate-100">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
+              <Sparkles className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Plan Your Trip</h2>
+              <p className="text-xs text-slate-500 font-mono mt-0.5">
+                Session ID: {conversationId.slice(0, 8)}...
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleResetSession}
+            title="Reset Session UUID & Start Fresh"
+            className="flex items-center space-x-1 text-xs text-slate-500 hover:text-blue-600 border border-slate-200 hover:border-blue-300 rounded-lg px-2.5 py-1.5 transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">New Session</span>
+          </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium">Days</label>
+            <label className="block text-sm font-semibold text-slate-750 mb-1.5">
+              Destination
+            </label>
             <input
-              type="number"
-              name="days"
-              min="1"
-              max="7"
-              value={formData.days}
+              type="text"
+              name="destination"
+              value={formData.destination}
               onChange={handleChange}
-              className="w-full mt-1 p-2 border rounded"
+              placeholder="e.g. Kyoto, Tokyo, Paris"
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-800 transition"
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-semibold text-slate-750 mb-1.5">
+                Days (1-7)
+              </label>
+              <input
+                type="number"
+                name="days"
+                min="1"
+                max="7"
+                value={formData.days}
+                onChange={handleChange}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-800 transition"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-750 mb-1.5">
+                Pace
+              </label>
+              <select
+                name="pace"
+                value={formData.pace}
+                onChange={handleChange}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-800 transition bg-white"
+              >
+                <option value="Relaxed">Relaxed</option>
+                <option value="Moderate">Moderate</option>
+                <option value="Fast-paced">Fast-paced</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-750 mb-1.5">
+              Interests
+            </label>
+            <input
+              type="text"
+              name="interests"
+              value={formData.interests}
+              onChange={handleChange}
+              placeholder="e.g. Ramen, Temples, Anime, Nightlife"
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-800 transition"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium">Pace</label>
+            <label className="block text-sm font-semibold text-slate-750 mb-1.5">
+              Budget
+            </label>
             <select
-              name="pace"
-              value={formData.pace}
+              name="budget"
+              value={formData.budget}
               onChange={handleChange}
-              className="w-full mt-1 p-2 border rounded"
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-800 transition bg-white"
             >
-              <option value="Relaxed">Relaxed</option>
-              <option value="Moderate">Moderate</option>
-              <option value="Fast-paced">Fast-paced</option>
+              <option value="Budget">Budget</option>
+              <option value="Mid-range">Mid-range</option>
+              <option value="Luxury">Luxury</option>
             </select>
           </div>
+
+          <div className="pt-2 flex items-center gap-3">
+            {!loading ? (
+              <button
+                type="submit"
+                className="w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 px-6 rounded-xl font-semibold hover:from-blue-700 hover:to-indigo-700 active:scale-[0.99] shadow-lg shadow-blue-500/20 transition-all"
+              >
+                <Sparkles className="w-5 h-5" />
+                <span>Generate Streamed Itinerary</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={stopStream}
+                className="w-full flex items-center justify-center space-x-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 py-3 px-6 rounded-xl font-semibold active:scale-[0.99] transition-all"
+              >
+                <Square className="w-4 h-4 fill-current" />
+                <span>Stop Generation</span>
+              </button>
+            )}
+          </div>
+        </form>
+      </div>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start space-x-3 text-red-800">
+          <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-semibold">Stream Request Failed</p>
+            <p className="mt-0.5 text-red-700">{error}</p>
+            <p className="mt-2 text-xs text-red-600">
+              Ensure your backend service is running locally on <code className="bg-red-100 px-1 rounded">http://localhost:8080</code>.
+            </p>
+          </div>
         </div>
+      )}
 
-        <div>
-          <label className="block text-sm font-medium">
-            Interests (comma-separated)
-          </label>
-          <input
-            type="text"
-            name="interests"
-            value={formData.interests}
-            onChange={handleChange}
-            className="w-full mt-1 p-2 border rounded"
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Budget</label>
-          <select
-            name="budget"
-            value={formData.budget}
-            onChange={handleChange}
-            className="w-full mt-1 p-2 border rounded"
-          >
-            <option value="Budget">Budget</option>
-            <option value="Mid-range">Mid-range</option>
-            <option value="Luxury">Luxury</option>
-          </select>
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full bg-blue-600 text-white p-2 rounded font-medium hover:bg-blue-700 disabled:bg-gray-400"
-        >
-          {loading ? "Generating Itinerary..." : "Generate Itinerary"}
-        </button>
-      </form>
-
-      {/* Render the JSON response cleanly */}
-      {itinerary && (
-        <div className="mt-8 space-y-6">
-          <h3 className="text-lg font-bold">
-            Your {itinerary.destination} Itinerary
-          </h3>
-          {itinerary.days.map((day) => (
-            <div
-              key={day.dayNumber}
-              className="border-l-4 border-blue-500 pl-4 py-1"
-            >
-              <h4 className="font-semibold">
-                Day {day.dayNumber}: {day.theme}
-              </h4>
-              <ul className="mt-2 space-y-2 text-sm">
-                {day.activities.map((act, index) => (
-                  <li key={index}>
-                    <span className="font-medium text-gray-600">
-                      {act.time}
-                    </span>{" "}
-                    - <strong className="text-gray-900">{act.location}</strong>:{" "}
-                    {act.description}
-                  </li>
-                ))}
-              </ul>
+      {/* Output Section (Streaming or Persisted Result) */}
+      {(loading || streamedText || itinerary) && (
+        <div className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
+          {/* Header & View Switcher */}
+          <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-2">
+                {loading ? (
+                  <span className="flex items-center space-x-2 text-blue-600 font-medium text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Streaming Response...</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center space-x-2 text-emerald-600 font-medium text-sm">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                    <span>Itinerary Ready (Saved)</span>
+                  </span>
+                )}
+              </div>
             </div>
-          ))}
+
+            <div className="flex items-center space-x-2">
+              {/* Tab selector if structured itinerary exists */}
+              {itinerary && (
+                <div className="flex bg-slate-200/70 p-1 rounded-xl text-xs font-semibold">
+                  <button
+                    onClick={() => setActiveTab("structured")}
+                    className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg transition-all ${
+                      activeTab === "structured"
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Formatted Card</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("raw")}
+                    className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg transition-all ${
+                      activeTab === "raw"
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    <Terminal className="w-3.5 h-3.5" />
+                    <span>Raw Stream</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Clear button */}
+              {!loading && (
+                <button
+                  type="button"
+                  onClick={handleClearSavedData}
+                  title="Clear Saved Output"
+                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Body Content */}
+          <div className="p-6 sm:p-8">
+            {activeTab === "structured" && itinerary ? (
+              <div className="space-y-8">
+                <div className="border-b border-slate-100 pb-4">
+                  <h3 className="text-2xl font-extrabold text-slate-900 flex items-center space-x-2">
+                    <span>{itinerary.destination} Itinerary</span>
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Customized {itinerary.days.length}-day travel plan based on your preferences.
+                  </p>
+                </div>
+
+                <div className="space-y-6">
+                  {itinerary.days.map((day) => (
+                    <div
+                      key={day.dayNumber}
+                      className="bg-slate-50/70 rounded-2xl p-5 border border-slate-200/80 hover:border-blue-200 transition"
+                    >
+                      <div className="flex items-center space-x-3 mb-4">
+                        <div className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs font-bold uppercase tracking-wider flex items-center space-x-1">
+                          <Calendar className="w-3.5 h-3.5" />
+                          <span>Day {day.dayNumber}</span>
+                        </div>
+                        <h4 className="text-lg font-bold text-slate-800">
+                          {day.theme}
+                        </h4>
+                      </div>
+
+                      <div className="space-y-3 pl-2 sm:pl-4">
+                        {day.activities.map((act, index) => (
+                          <div
+                            key={index}
+                            className="flex items-start space-x-3 p-3 bg-white rounded-xl border border-slate-100 shadow-xs"
+                          >
+                            <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg shrink-0 mt-0.5">
+                              <Clock className="w-4 h-4" />
+                            </div>
+                            <div className="space-y-0.5 text-sm">
+                              <div className="flex items-center space-x-2">
+                                <span className="font-semibold text-blue-600 font-mono text-xs">
+                                  {act.time}
+                                </span>
+                                <span className="text-slate-300">•</span>
+                                <span className="font-bold text-slate-900 flex items-center space-x-1">
+                                  <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                  <span>{act.location}</span>
+                                </span>
+                              </div>
+                              <p className="text-slate-600 leading-relaxed pt-0.5">
+                                {act.description}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              /* Streaming Log / Raw View */
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-2">
+                  <div className="flex items-center space-x-2">
+                    <Terminal className="w-4 h-4 text-blue-500" />
+                    <span>Real-time Stream Feed</span>
+                  </div>
+                  <span>{streamedText.length} chars</span>
+                </div>
+                <div className="p-4 bg-slate-900 text-slate-100 rounded-xl font-mono text-xs sm:text-sm leading-relaxed overflow-x-auto max-h-[480px] overflow-y-auto whitespace-pre-wrap shadow-inner border border-slate-800">
+                  {streamedText}
+                  {loading && (
+                    <span className="inline-block w-2 h-4 ml-1 bg-blue-400 animate-pulse align-middle" />
+                  )}
+                  <div ref={streamEndRef} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+
